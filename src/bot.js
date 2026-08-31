@@ -6,6 +6,16 @@ import { AudioConverter } from './services/audioConverter.js';
 import { GeminiService } from './services/geminiService.js';
 import { DbService } from './services/dbService.js';
 import { initScheduler } from './services/scheduler.js';
+import http from 'http';
+
+// Servidor falso para engañar el Port Scan de Render
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot de Agenda Inteligente en ejecución\n');
+}).listen(PORT, () => {
+  console.log(`🌐 Servidor de Keep-Alive escuchando en el puerto ${PORT}`);
+});
 
 dotenv.config();
 
