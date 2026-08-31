@@ -4,7 +4,6 @@ import path from 'path';
 const dbPath = path.resolve('agenda.db');
 const db = new sqlite3.Database(dbPath);
 
-// Inicializar tabla de tareas
 db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS tasks (
@@ -21,9 +20,6 @@ db.serialize(() => {
 });
 
 export class DbService {
-  /**
-   * Guarda una nueva tarea en la base de datos.
-   */
   static saveTask(chatId, taskData) {
     return new Promise((resolve, reject) => {
       const query = `
@@ -47,9 +43,6 @@ export class DbService {
     });
   }
 
-  /**
-   * Obtiene todas las tareas vencidas que aún no han sido notificadas.
-   */
   static getPendingReminders() {
     return new Promise((resolve, reject) => {
       const nowISO = new Date().toISOString();
@@ -64,15 +57,42 @@ export class DbService {
     });
   }
 
-  /**
-   * Marca una tarea como ya notificada.
-   */
   static markAsNotified(taskId) {
     return new Promise((resolve, reject) => {
       const query = `UPDATE tasks SET notificado = 1 WHERE id = ?`;
       db.run(query, [taskId], (err) => {
         if (err) reject(err);
         else resolve();
+      });
+    });
+  }
+
+  /**
+   * NUEVO: Obtiene todas las tareas pendientes futuras de un usuario específico.
+   */
+  static getAllPendingTasks(chatId) {
+    return new Promise((resolve, reject) => {
+      const query = `
+        SELECT * FROM tasks 
+        WHERE chat_id = ? AND notificado = 0 
+        ORDER BY fecha_recordatorio ASC
+      `;
+      db.all(query, [chatId], (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  }
+
+  /**
+   * NUEVO: Elimina una tarea por su ID si pertenece al usuario que la solicita.
+   */
+  static deleteTaskById(taskId, chatId) {
+    return new Promise((resolve, reject) => {
+      const query = `DELETE FROM tasks WHERE id = ? AND chat_id = ?`;
+      db.run(query, [taskId, chatId], function (err) {
+        if (err) reject(err);
+        else resolve(this.changes > 0); // Devuelve true si eliminó algún registro
       });
     });
   }

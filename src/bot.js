@@ -19,10 +19,83 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 // Inicializar el programador de recordatorios
 initScheduler(bot);
 
-bot.start((ctx) => {
+// Comando /start y /ayuda
+const sendHelp = (ctx) => {
   ctx.reply(
-    '👋 ¡Hola! Soy tu Agenda Inteligente.\n\nEnvíame un mensaje de texto o una nota de voz y te enviaré un recordatorio automático en el momento exacto.'
+    `👋 *¡Hola! Soy tu Agenda Inteligente.*\n\n` +
+      `Puedes enviarme notas de voz o mensajes de texto para agendar recordatorios.\n\n` +
+      `📋 *Comandos disponibles:*\n` +
+      `• /tareas - Ver la lista de recordatorios pendientes.\n` +
+      `• /borrar <ID> - Eliminar una tarea (ejemplo: \`/borrar 3\`)\n` +
+      `• /ayuda - Mostrar este mensaje de ayuda.`,
+    { parse_mode: 'Markdown' }
   );
+};
+
+bot.start(sendHelp);
+bot.command('ayuda', sendHelp);
+
+// COMANDO: /tareas (Listar tareas pendientes)
+bot.command('tareas', async (ctx) => {
+  try {
+    const tasks = await DbService.getAllPendingTasks(ctx.chat.id);
+
+    if (tasks.length === 0) {
+      return ctx.reply('🎉 *¡No tienes tareas pendientes agendadas!*', {
+        parse_mode: 'Markdown',
+      });
+    }
+
+    let message = `📋 *TUS TAREAS PENDIENTES:* \n\n`;
+
+    tasks.forEach((task) => {
+      const fecha = new Date(task.fecha_recordatorio).toLocaleString('es-AR');
+      message += `🆔 *ID ${task.id}*: ${task.titulo}\n`;
+      message += `📅 *Fecha:* ${fecha}\n`;
+      if (task.lugar_mencionado) {
+        message += `📍 *Lugar:* ${task.lugar_mencionado}\n`;
+      }
+      message += `------------------------\n`;
+    });
+
+    message += `\n💡 *Para eliminar una tarea usa:* \`/borrar <ID>\``;
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('Error al listar tareas:', error);
+    await ctx.reply('❌ Error al obtener la lista de tareas pendientes.');
+  }
+});
+
+// COMANDO: /borrar <ID> (Eliminar una tarea)
+bot.command('borrar', async (ctx) => {
+  const input = ctx.message.text.split(' ');
+  const taskId = parseInt(input[1], 10);
+
+  if (isNaN(taskId)) {
+    return ctx.reply(
+      '⚠️ *Uso incorrecto.* Debes indicar el número de ID de la tarea.\nEjemplo: `/borrar 2`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  try {
+    const deleted = await DbService.deleteTaskById(taskId, ctx.chat.id);
+
+    if (deleted) {
+      await ctx.reply(`✅ *Tarea con ID ${taskId} eliminada con éxito.*`, {
+        parse_mode: 'Markdown',
+      });
+    } else {
+      await ctx.reply(
+        `❌ No se encontró ninguna tarea pendiente con el ID *${taskId}*.`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+  } catch (error) {
+    console.error('Error al borrar tarea:', error);
+    await ctx.reply('❌ Error interno al intentar eliminar la tarea.');
+  }
 });
 
 // Manejo de Texto
@@ -34,12 +107,11 @@ bot.on('text', async (ctx) => {
 
   try {
     const taskData = await GeminiService.processText(userMessage);
-
-    // Guardar en la Base de Datos SQLite
-    await DbService.saveTask(ctx.chat.id, taskData);
+    const taskId = await DbService.saveTask(ctx.chat.id, taskData);
 
     const responseText =
       `✅ *¡Tarea Agendada y Programada!*\n\n` +
+      `🆔 *ID Tarea:* ${taskId}\n` +
       `📌 *Título:* ${taskData.titulo}\n` +
       `📝 *Descripción:* ${taskData.descripcion}\n` +
       `📅 *Recordatorio:* ${new Date(taskData.fecha_recordatorio).toLocaleString('es-AR')}\n` +
@@ -81,12 +153,11 @@ bot.on('voice', async (ctx) => {
     await AudioConverter.convertOggToMp3(oggPath, mp3Path);
 
     const taskData = await GeminiService.processAudio(mp3Path);
-
-    // Guardar en la Base de Datos SQLite
-    await DbService.saveTask(ctx.chat.id, taskData);
+    const taskId = await DbService.saveTask(ctx.chat.id, taskData);
 
     const responseText =
       `✅ *¡Nota de Voz Agendada y Programada!*\n\n` +
+      `🆔 *ID Tarea:* ${taskId}\n` +
       `📌 *Título:* ${taskData.titulo}\n` +
       `📝 *Transcripción:* ${taskData.descripcion}\n` +
       `📅 *Recordatorio:* ${new Date(taskData.fecha_recordatorio).toLocaleString('es-AR')}\n` +
