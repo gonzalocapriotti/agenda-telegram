@@ -35,7 +35,7 @@ db.run(`CREATE TABLE IF NOT EXISTS recordatorios (
 async function consultarAudiovisuales(fecha) {
   try {
     const url = `${WEBHOOK_URL}?accion=consultar&fecha=${encodeURIComponent(fecha)}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { redirect: 'follow' });
     return await response.json();
   } catch (error) {
     console.error("Error al consultar la planilla:", error);
@@ -54,6 +54,15 @@ async function agregarAudiovisual(datos) {
       actividad: datos.actividad || "",
       responsable: datos.responsable || ""
     });
+
+    const url = `${WEBHOOK_URL}?${params.toString()}`;
+    const response = await fetch(url, { redirect: 'follow' });
+    return await response.json();
+  } catch (error) {
+    console.error("Error al agregar a la planilla:", error);
+    return { status: "error", message: error.message };
+  }
+}
 
     const url = `${WEBHOOK_URL}?${params.toString()}`;
     const response = await fetch(url);
