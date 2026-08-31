@@ -147,88 +147,87 @@ bot.command('borrar', async (ctx) => {
 });
 
 // Manejo de Texto
-bot.on('text', async (ctx) => {
-  const userMessage = ctx.message.text;
-  if (userMessage.startsWith('/')) return;
+// Importante: Asegurate de tener estas dos funciones definidas arriba en tu src/bot.js:
+// async function consultarAudiovisuales(fecha) { ... }
+// async function agregarAudiovisual(datos) { ... }
 
-  const statusMsg = await ctx.reply('🧠 Procesando instrucción con Gemini...');
-
-  try {
-    const taskData = await GeminiService.processText(userMessage);
-    const taskId = await DbService.saveTask(ctx.chat.id, taskData);
-
-    const responseText =
-      `✅ *¡Tarea Agendada y Programada!*\n\n` +
-      `🆔 *ID Tarea:* ${taskId}\n` +
-      `📌 *Título:* ${taskData.titulo}\n` +
-      `📝 *Descripción:* ${taskData.descripcion}\n` +
-      `📅 *Recordatorio:* ${new Date(taskData.fecha_recordatorio).toLocaleString('es-AR')}\n` +
-      `📍 *Lugar:* ${taskData.lugar_mencionado || 'No especificado'}\n\n` +
-      `🔔 *Te enviaré una notificación en Telegram a la hora acordada.*`;
-
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      statusMsg.message_id,
-      null,
-      responseText,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (error) {
-    console.error('Error en texto:', error);
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      statusMsg.message_id,
-      null,
-      '❌ Hubo un error al interpretar la tarea. Inténtalo de nuevo.'
-    );
-  }
-});
-
-// Manejo de Audio
-bot.on('voice', async (ctx) => {
-  const statusMsg = await ctx.reply('🎙️ Transcribiendo y procesando audio...');
-
-  const timestamp = Date.now();
-  const tempDir = os.tmpdir();
-  const oggPath = path.join(tempDir, `voice_${timestamp}.ogg`);
-  const mp3Path = path.join(tempDir, `voice_${timestamp}.mp3`);
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  let textoUsuario = "";
 
   try {
-    const fileId = ctx.message.voice.file_id;
-    const fileLink = await ctx.telegram.getFileLink(fileId);
+    // 1. Si el mensaje es VOZ, lo transcribimos primero
+    if (msg.voice) {
+      await bot.sendMessage(chatId, "🎙️ Escuchando tu audio...");
+      // Aca usas la lógica que ya tenías para descargar el audio y transcribirlo con Gemini
+      textoUsuario = await transcribirAudio(msg.voice.file_id); 
+    } 
+    // 2. Si el mensaje es TEXTO
+    else if (msg.text) {
+      textoUsuario = msg.text;
+    } 
+    else {
+      return; // Si es un sticker, foto, etc., lo ignoramos
+    }
 
-    await AudioConverter.downloadFile(fileLink.href, oggPath);
-    await AudioConverter.convertOggToMp3(oggPath, mp3Path);
+    if (!textoUsuario) return;
 
-    const taskData = await GeminiService.processAudio(mp3Path);
-    const taskId = await DbService.saveTask(ctx.chat.id, taskData);
+    // 3. Enviamos el texto (o la transcripción) a Gemini para analizar la intención
+    const fechaActual = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
+    
+    const promptAI = `
+    La fecha y hora actual es ${fechaActual}.
+    El usuario dijo: "${textoUsuario}".
 
-    const responseText =
-      `✅ *¡Nota de Voz Agendada y Programada!*\n\n` +
-      `🆔 *ID Tarea:* ${taskId}\n` +
-      `📌 *Título:* ${taskData.titulo}\n` +
-      `📝 *Transcripción:* ${taskData.descripcion}\n` +
-      `📅 *Recordatorio:* ${new Date(taskData.fecha_recordatorio).toLocaleString('es-AR')}\n` +
-      `📍 *Lugar:* ${taskData.lugar_mencionado || 'No especificado'}\n\n` +
-      `🔔 *Te enviaré una notificación en Telegram a la hora acordada.*`;
+    Analizá el pedido. Si el usuario quiere hacer algo relacionado con la planilla de Audiovisuales, respondé ÚNICAMENTE con un objeto JSON sin formato Markdown (sin \`\`\`json):
 
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      statusMsg.message_id,
-      null,
-      responseText,
-      { parse_mode: 'Markdown' }
-    );
+    1. Si quiere CONSULTAR (ej: "¿Qué hay en audiovisuales el 5/9?"):
+    {"accion": "consultar_audiovisual", "fecha": "5/9"}
+
+    2. Si quiere AGREGAR/AGENDAR (ej: "Agendá proyector para 4to A el 10/9 a las 09:00 en el Hall"):
+    {"accion": "agregar_audiovisual", "fecha": "10/09/2026", "unidad": "SECUNDARIA", "horaInicio": "09:00", "lugar": "Hall", "actividad": "Proyector para 4to A", "responsable": ""}
+
+    3. Si es una charla normal o consulta que NO es de la planilla:
+    {"accion": "charla", "respuesta": "Tu respuesta como asistente de IA aquí..."}
+    `;
+
+    const result = await model.generateContent(promptAI);
+    const respuestaTexto = result.response.text();
+    const respuestaIA = JSON.parse(respuestaTexto.trim());
+
+    // --- OPCIONES DE RESPUESTA ---
+
+    if (respuestaIA.accion === "consultar_audiovisual") {
+      await bot.sendMessage(chatId, `🔍 Buscando reservas para el ${respuestaIA.fecha}...`);
+      const resultado = await consultarAudiovisuales(respuestaIA.fecha);
+      
+      if (resultado.status === "success" && resultado.resultados.length > 0) {
+        let msgRespuesta = `🎬 *Reservas encontradas para el ${respuestaIA.fecha}:*\n\n`;
+        resultado.resultados.forEach(item => {
+          msgRespuesta += `• *${item.actividad}*\n  📍 Lugar: ${item.lugar}\n  ⏰ Hora: ${item.horaInicio}\n  🏫 Unidad: ${item.unidad}\n\n`;
+        });
+        await bot.sendMessage(chatId, msgRespuesta, { parse_mode: "Markdown" });
+      } else {
+        await bot.sendMessage(chatId, `❌ No hay reservas registradas en Audiovisuales para el ${respuestaIA.fecha}.`);
+      }
+    } 
+    else if (respuestaIA.accion === "agregar_audiovisual") {
+      await bot.sendMessage(chatId, `⏳ Guardando reserva en la planilla...`);
+      const resultado = await agregarAudiovisual(respuestaIA);
+      
+      if (resultado.status === "success") {
+        await bot.sendMessage(chatId, `✅ *¡Reserva guardada con éxito!*\n\n📅 Fecha: ${respuestaIA.fecha}\n📌 Actividad: ${respuestaIA.actividad}\n📍 Lugar: ${respuestaIA.lugar}`, { parse_mode: "Markdown" });
+      } else {
+        await bot.sendMessage(chatId, `⚠️ Hubo un error al guardar en la planilla: ${resultado.message}`);
+      }
+    } 
+    else {
+      await bot.sendMessage(chatId, respuestaIA.respuesta || "No entendí la consulta.");
+    }
+
   } catch (error) {
-    console.error('Error en voz:', error);
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      statusMsg.message_id,
-      null,
-      '❌ Error al procesar el audio. Inténtalo de nuevo.'
-    );
-  } finally {
-    AudioConverter.cleanupFiles(oggPath, mp3Path);
+    console.error("Error al procesar el mensaje:", error);
+    await bot.sendMessage(chatId, "⚠️ Ocurrió un error al procesar tu solicitud.");
   }
 });
 
