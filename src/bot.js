@@ -11,7 +11,7 @@ const bot = new Telegraf(token);
 const genAI = new GoogleGenerativeAI(apiKey);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// Inicialización de SQLite para Recordatorios Personales
+// Inicialización de SQLite
 const db = new sqlite3.Database('./recordatorios.db', (err) => {
   if (err) console.error("Error al conectar SQLite:", err);
   else console.log("💾 Base de datos SQLite conectada.");
@@ -58,6 +58,7 @@ async function agregarAudiovisual(datos) {
   }
 }
 
+// Procesador de voz mejorado
 async function transcribirAudio(ctx, fileId) {
   try {
     const fileLink = await ctx.telegram.getFileLink(fileId);
@@ -72,7 +73,7 @@ async function transcribirAudio(ctx, fileId) {
       }
     };
 
-    const prompt = "Transcribí exactamente lo que se dice en este audio en español.";
+    const prompt = "Transcribí de forma exacta y literal el contenido de este mensaje de voz en español.";
     const result = await model.generateContent([prompt, audioPart]);
     return result.response.text().trim();
   } catch (error) {
@@ -81,10 +82,10 @@ async function transcribirAudio(ctx, fileId) {
   }
 }
 
-// === 3. COMANDOS PARA RECORDATORIOS LOCALES ===
+// === 3. COMANDOS DEL BOT ===
 
 bot.command('start', (ctx) => {
-  ctx.reply("👋 ¡Hola! Soy tu asistente. Podés pedirme que guarde recordatorios, te muestre /tareas, o consultar y agendar reservas en la planilla de Audiovisuales.");
+  ctx.reply("👋 ¡Hola! Soy tu asistente personal.\n\n• Podés pedirme recordatorios: *'recordame en 10 minutos apagar el horno'*\n• Ver tus tareas: /tareas\n• Consultar o agendar en Audiovisuales mediante texto o notas de voz.", { parse_mode: 'Markdown' });
 });
 
 bot.command('tareas', (ctx) => {
@@ -95,7 +96,7 @@ bot.command('tareas', (ctx) => {
     }
     let msg = "📋 *Tus Recordatorios Pendientes:*\n\n";
     rows.forEach(r => {
-      msg += `id ${r.id}: ${r.texto}${r.fecha ? ' (' + r.fecha + ')' : ''}\n`;
+      msg += `• *[ID ${r.id}]* ${r.texto} (${r.fecha})\n`;
     });
     msg += "\nUsá `/borrar [id]` para eliminar uno.";
     ctx.reply(msg, { parse_mode: 'Markdown' });
@@ -105,32 +106,34 @@ bot.command('tareas', (ctx) => {
 bot.command('borrar', (ctx) => {
   const partes = ctx.message.text.split(" ");
   const id = partes[1];
-  if (!id) return ctx.reply("⚠️ Debes indicar el id. Ejemplo: `/borrar 2`", { parse_mode: 'Markdown' });
+  if (!id) return ctx.reply("⚠️ Debés indicar el ID. Ejemplo: `/borrar 2`", { parse_mode: 'Markdown' });
 
   db.run("DELETE FROM recordatorios WHERE id = ? AND user_id = ?", [id, ctx.from.id], function(err) {
     if (err || this.changes === 0) {
       return ctx.reply("❌ No se encontró un recordatorio con ese ID.");
     }
-    ctx.reply(`🗑️ Recordatorio ID ${id} eliminado con éxito.`);
+    ctx.reply(`🗑️ Recordatorio ID ${id} eliminado correctamente.`);
   });
 });
 
 bot.command('ayuda', (ctx) => {
-  ctx.reply("🤖 *Comandos disponibles:*\n/tareas - Ver tus recordatorios guardados\n/borrar [id] - Borrar un recordatorio\n/ayuda - Esta ayuda\n\nTambién podés mandarme notas de voz o texto libre para agendar tareas o gestionar Audiovisuales.", { parse_mode: 'Markdown' });
+  ctx.reply("🤖 *Comandos:*\n/tareas - Ver pendientes\n/borrar [id] - Borrar pendiente\n/ayuda - Esta ayuda", { parse_mode: 'Markdown' });
 });
 
-// === 4. PROCESADOR DE MENSAJES (TEXTO Y AUDIO) ===
+// === 4. ESCUCHA PRINCIPAL (TEXTO Y AUDIO) ===
 
 bot.on(['text', 'voice'], async (ctx) => {
   let textoUsuario = "";
 
   try {
     if (ctx.message.voice) {
-      await ctx.reply("🎙️ Escuchando tu audio...");
+      await ctx.reply("🎙️ Escuchando audio...");
       textoUsuario = await transcribirAudio(ctx, ctx.message.voice.file_id);
-      if (!textoUsuario) return ctx.reply("⚠️ No pude interpretar el audio.");
+      if (!textoUsuario) {
+        return ctx.reply("⚠️ No pude entender el audio. Por favor intentá hablar más claro o enviar un mensaje de texto.");
+      }
     } else if (ctx.message.text) {
-      if (ctx.message.text.startsWith('/')) return;
+      if (ctx.message.text.startsWith('/')) return; // Ignorar comandos
       textoUsuario = ctx.message.text;
     }
 
@@ -142,18 +145,19 @@ bot.on(['text', 'voice'], async (ctx) => {
     La fecha y hora actual en Argentina es ${fechaActual}.
     El usuario dijo: "${textoUsuario}".
 
-    Analizá el pedido del usuario. Respondé ÚNICAMENTE con un objeto JSON estricto (sin etiquetas \`\`\`json):
+    Analizá la intención del usuario. Respondé ÚNICAMENTE un objeto JSON estricto (sin etiquetas \`\`\`json):
 
-    1. Si quiere CONSULTAR la planilla de Audiovisuales:
+    1. Si quiere CONSULTAR la planilla de Audiovisuales (ej: "¿Qué hay en audiovisuales el 5/9?"):
     {"accion": "consultar_audiovisual", "fecha": "5/9"}
 
     2. Si quiere AGREGAR/AGENDAR en la planilla de Audiovisuales:
     {"accion": "agregar_audiovisual", "fecha": "10/09/2026", "unidad": "SECUNDARIA", "horaInicio": "09:00", "lugar": "Hall", "actividad": "Proyector para 4to A", "responsable": ""}
 
-    3. Si el usuario pide GUARDAR UN RECORDATORIO PERSONAL O TAREA LOCAL (ej: "Recordame comprar café mañana", "Anotá llamar al técnico"):
-    {"accion": "guardar_recordatorio", "texto": "comprar café", "fecha": "mañana"}
+    3. Si pide UN RECORDATORIO TEMPORIZADO O TAREA (ej: "Recordame en 10 minutos apagar el horno", "Anotá comprar café", "Recordame mañana a las 15 hs llamar a Juan"):
+    {"accion": "guardar_recordatorio", "texto": "detalle de la tarea", "minutos": 10, "fechaTexto": "en 10 minutos"}
+    (Nota: si el usuario dice "en X minutos", poné el número de minutos en la clave "minutos". Si es una tarea sin tiempo exacto, poné "minutos": 0).
 
-    4. Si es una conversación o consulta general:
+    4. Si es una conversación libre o pregunta general:
     {"accion": "charla", "respuesta": "Escribí tu respuesta conversacional habitual aquí."}
     `;
 
@@ -168,9 +172,9 @@ bot.on(['text', 'voice'], async (ctx) => {
 
     const respuestaIA = JSON.parse(respuestaTexto);
 
-    // --- MANEJO DE ACCIONES ---
+    // --- PROCESAMIENTO DE ACCIONES ---
 
-    // A. Consultar Audiovisuales
+    // CASO A: Consultar Audiovisuales
     if (respuestaIA.accion === "consultar_audiovisual") {
       await ctx.reply(`🔍 Consultando agenda para el ${respuestaIA.fecha}...`);
       const resultado = await consultarAudiovisuales(respuestaIA.fecha);
@@ -185,7 +189,7 @@ bot.on(['text', 'voice'], async (ctx) => {
         await ctx.reply(`❌ No hay reservas registradas en Audiovisuales para el ${respuestaIA.fecha}.`);
       }
     } 
-    // B. Agregar a Audiovisuales
+    // CASO B: Agregar a Audiovisuales
     else if (respuestaIA.accion === "agregar_audiovisual") {
       await ctx.reply(`⏳ Guardando registro en la planilla...`);
       const resultado = await agregarAudiovisual(respuestaIA);
@@ -199,14 +203,33 @@ bot.on(['text', 'voice'], async (ctx) => {
         await ctx.reply(`⚠️ No se pudo guardar el registro: ${resultado.message}`);
       }
     }
-    // C. Guardar Recordatorio Local (SQLite)
+    // CASO C: Guardar Recordatorio (con temporizador activo si se indicaron minutos)
     else if (respuestaIA.accion === "guardar_recordatorio") {
       const stmt = db.prepare("INSERT INTO recordatorios (user_id, texto, fecha) VALUES (?, ?, ?)");
-      stmt.run(ctx.from.id, respuestaIA.texto, respuestaIA.fecha || "Sin fecha");
+      const fechaInfo = respuestaIA.fechaTexto || (respuestaIA.minutos > 0 ? `en ${respuestaIA.minutos} min` : "Sin tiempo exacto");
+      
+      stmt.run(ctx.from.id, respuestaIA.texto, fechaInfo);
       stmt.finalize();
-      await ctx.reply(`📌 *Recordatorio guardado:* "${respuestaIA.texto}"\n\nPodés verlo cuando quieras enviando /tareas`, { parse_mode: "Markdown" });
+
+      // Si el usuario especificó minutos (ej: "en 10 minutos"), programamos la alarma en segundo plano
+      if (respuestaIA.minutos && respuestaIA.minutos > 0) {
+        const milisegundos = respuestaIA.minutos * 60 * 1000;
+        
+        await ctx.reply(`⏰ *Recordatorio programado:* "${respuestaIA.texto}"\n\nTe voy a avisar automáticamente en ${respuestaIA.minutos} minuto(s).`, { parse_mode: "Markdown" });
+
+        setTimeout(async () => {
+          try {
+            await ctx.telegram.sendMessage(ctx.chat.id, `🔔 *¡ALARMA / RECORDATORIO!*\n\n📌 *Tarea:* ${respuestaIA.texto}`, { parse_mode: "Markdown" });
+          } catch (e) {
+            console.error("Error al enviar alarma programada:", e);
+          }
+        }, milisegundos);
+
+      } else {
+        await ctx.reply(`📌 *Recordatorio guardado:* "${respuestaIA.texto}"\n\nPodés revisarlo con /tareas`, { parse_mode: "Markdown" });
+      }
     }
-    // D. Charla Conversacional
+    // CASO D: Conversación General
     else {
       await ctx.reply(respuestaIA.respuesta || "No pude interpretar tu solicitud.");
     }
