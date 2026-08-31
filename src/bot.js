@@ -1,27 +1,18 @@
-import { Telegraf } from 'telegraf';
-import dotenv from 'dotenv';
-import path from 'path';
-import os from 'os';
-import { AudioConverter } from './services/audioConverter.js';
-import { GeminiService } from './services/geminiService.js';
-import { DbService } from './services/dbService.js';
-import { initScheduler } from './services/scheduler.js';
+import TelegramBot from 'node-telegram-bot-api';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-import http from 'http';
-
-// Servidor web de mentira para engañar a Render
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Bot funcionando OK\n');
-}).listen(PORT, '0.0.0.0', () => {
-  console.log(`🌐 Servidor web fantasma escuchando en el puerto ${PORT}`);
-});
-
-// Carga la URL que configuraste en Render
+// === 1. CONFIGURACIÓN Y CLIENTES ===
+const token = process.env.TELEGRAM_TOKEN;
+const apiKey = process.env.GEMINI_API_KEY;
 const WEBHOOK_URL = process.env.WEBHOOK_AUDIOVISUAL_URL;
 
-// Función para consultar la planilla por fecha
+const bot = new TelegramBot(token, { polling: true });
+const genAI = new GoogleGenerativeAI(apiKey);
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+// === 2. FUNCIONES DE CONEXIÓN CON GOOGLE SHEETS ===
+
+// Consulta reservas por fecha
 async function consultarAudiovisuales(fecha) {
   try {
     const url = `${WEBHOOK_URL}?accion=consultar&fecha=${encodeURIComponent(fecha)}`;
@@ -33,7 +24,7 @@ async function consultarAudiovisuales(fecha) {
   }
 }
 
-// Función para agregar un nuevo registro a la planilla
+// Agrega una nueva reserva
 async function agregarAudiovisual(datos) {
   try {
     const params = new URLSearchParams({
@@ -55,152 +46,92 @@ async function agregarAudiovisual(datos) {
   }
 }
 
-dotenv.config();
+// Función para procesar notas de voz con Gemini
+async function transcribirAudio(fileId) {
+  try {
+    const fileLink = await bot.getFileLink(fileId);
+    const response = await fetch(fileLink);
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
-if (!process.env.TELEGRAM_BOT_TOKEN) {
-  console.error('❌ Error: TELEGRAM_BOT_TOKEN no está definido en el archivo .env');
-  process.exit(1);
+    const audioPart = {
+      inlineData: {
+        data: buffer.toString("base64"),
+        mimeType: "audio/ogg"
+      }
+    };
+
+    const prompt = "Transcribí exactamente lo que dice este mensaje de audio en español.";
+    const result = await model.generateContent([prompt, audioPart]);
+    return result.response.text().trim();
+  } catch (error) {
+    console.error("Error al transcribir audio:", error);
+    return null;
+  }
 }
 
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-
-// Inicializar el programador de recordatorios
-initScheduler(bot);
-
-// Comando /start y /ayuda
-const sendHelp = (ctx) => {
-  ctx.reply(
-    `👋 *¡Hola! Soy tu Agenda Inteligente.*\n\n` +
-      `Puedes enviarme notas de voz o mensajes de texto para agendar recordatorios.\n\n` +
-      `📋 *Comandos disponibles:*\n` +
-      `• /tareas - Ver la lista de recordatorios pendientes.\n` +
-      `• /borrar <ID> - Eliminar una tarea (ejemplo: \`/borrar 3\`)\n` +
-      `• /ayuda - Mostrar este mensaje de ayuda.`,
-    { parse_mode: 'Markdown' }
-  );
-};
-
-bot.start(sendHelp);
-bot.command('ayuda', sendHelp);
-
-// COMANDO: /tareas (Listar tareas pendientes)
-bot.command('tareas', async (ctx) => {
-  try {
-    const tasks = await DbService.getAllPendingTasks(ctx.chat.id);
-
-    if (tasks.length === 0) {
-      return ctx.reply('🎉 *¡No tienes tareas pendientes agendadas!*', {
-        parse_mode: 'Markdown',
-      });
-    }
-
-    let message = `📋 *TUS TAREAS PENDIENTES:* \n\n`;
-
-    tasks.forEach((task) => {
-      const fecha = new Date(task.fecha_recordatorio).toLocaleString('es-AR');
-      message += `🆔 *ID ${task.id}*: ${task.titulo}\n`;
-      message += `📅 *Fecha:* ${fecha}\n`;
-      if (task.lugar_mencionado) {
-        message += `📍 *Lugar:* ${task.lugar_mencionado}\n`;
-      }
-      message += `------------------------\n`;
-    });
-
-    message += `\n💡 *Para eliminar una tarea usa:* \`/borrar <ID>\``;
-
-    await ctx.reply(message, { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error('Error al listar tareas:', error);
-    await ctx.reply('❌ Error al obtener la lista de tareas pendientes.');
-  }
-});
-
-// COMANDO: /borrar <ID> (Eliminar una tarea)
-bot.command('borrar', async (ctx) => {
-  const input = ctx.message.text.split(' ');
-  const taskId = parseInt(input[1], 10);
-
-  if (isNaN(taskId)) {
-    return ctx.reply(
-      '⚠️ *Uso incorrecto.* Debes indicar el número de ID de la tarea.\nEjemplo: `/borrar 2`',
-      { parse_mode: 'Markdown' }
-    );
-  }
-
-  try {
-    const deleted = await DbService.deleteTaskById(taskId, ctx.chat.id);
-
-    if (deleted) {
-      await ctx.reply(`✅ *Tarea con ID ${taskId} eliminada con éxito.*`, {
-        parse_mode: 'Markdown',
-      });
-    } else {
-      await ctx.reply(
-        `❌ No se encontró ninguna tarea pendiente con el ID *${taskId}*.`,
-        { parse_mode: 'Markdown' }
-      );
-    }
-  } catch (error) {
-    console.error('Error al borrar tarea:', error);
-    await ctx.reply('❌ Error interno al intentar eliminar la tarea.');
-  }
-});
-
-// Manejo de Texto
-// Importante: Asegurate de tener estas dos funciones definidas arriba en tu src/bot.js:
-// async function consultarAudiovisuales(fecha) { ... }
-// async function agregarAudiovisual(datos) { ... }
+// === 3. MANEJADOR PRINCIPAL DE MENSAJES (TEXTO Y AUDIO) ===
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   let textoUsuario = "";
 
   try {
-    // 1. Si el mensaje es VOZ, lo transcribimos primero
+    // A. Si es un mensaje de VOZ
     if (msg.voice) {
-      await bot.sendMessage(chatId, "🎙️ Escuchando tu audio...");
-      // Aca usas la lógica que ya tenías para descargar el audio y transcribirlo con Gemini
-      textoUsuario = await transcribirAudio(msg.voice.file_id); 
+      await bot.sendMessage(chatId, "🎙️ Escuchando audio...");
+      textoUsuario = await transcribirAudio(msg.voice.file_id);
+      if (!textoUsuario) {
+        await bot.sendMessage(chatId, "⚠️ No pude entender el audio.");
+        return;
+      }
     } 
-    // 2. Si el mensaje es TEXTO
+    // B. Si es un mensaje de TEXTO
     else if (msg.text) {
       textoUsuario = msg.text;
     } 
     else {
-      return; // Si es un sticker, foto, etc., lo ignoramos
+      return; // Ignorar fotos, stickers, etc.
     }
 
-    if (!textoUsuario) return;
-
-    // 3. Enviamos el texto (o la transcripción) a Gemini para analizar la intención
+    // C. Analizar la intención del mensaje con Gemini
     const fechaActual = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
-    
+
     const promptAI = `
-    La fecha y hora actual es ${fechaActual}.
+    La fecha y hora actual en Argentina es ${fechaActual}.
     El usuario dijo: "${textoUsuario}".
 
-    Analizá el pedido. Si el usuario quiere hacer algo relacionado con la planilla de Audiovisuales, respondé ÚNICAMENTE con un objeto JSON sin formato Markdown (sin \`\`\`json):
+    Analizá el pedido. Si el usuario quiere interactuar con la planilla de Audiovisuales, respondé ÚNICAMENTE un objeto JSON estricto (sin bloques \`\`\`json, solo el texto del JSON):
 
-    1. Si quiere CONSULTAR (ej: "¿Qué hay en audiovisuales el 5/9?"):
+    1. Si quiere CONSULTAR la planilla (ej: "¿Qué hay en audiovisuales el 5/9?"):
     {"accion": "consultar_audiovisual", "fecha": "5/9"}
 
-    2. Si quiere AGREGAR/AGENDAR (ej: "Agendá proyector para 4to A el 10/9 a las 09:00 en el Hall"):
+    2. Si quiere AGREGAR/AGENDAR en la planilla (ej: "Agendá proyector para 4to A el 10/9 a las 09:00 en el Hall"):
     {"accion": "agregar_audiovisual", "fecha": "10/09/2026", "unidad": "SECUNDARIA", "horaInicio": "09:00", "lugar": "Hall", "actividad": "Proyector para 4to A", "responsable": ""}
 
-    3. Si es una charla normal o consulta que NO es de la planilla:
-    {"accion": "charla", "respuesta": "Tu respuesta como asistente de IA aquí..."}
+    3. Si es una consulta general o charla que NO requiere modificar o leer la planilla:
+    {"accion": "charla", "respuesta": "Escribí acá tu respuesta amable como asistente virtual."}
     `;
 
     const result = await model.generateContent(promptAI);
-    const respuestaTexto = result.response.text();
-    const respuestaIA = JSON.parse(respuestaTexto.trim());
+    let respuestaTexto = result.response.text().trim();
+    
+    // Limpiar posibles etiquetas de Markdown JSON
+    if (respuestaTexto.startsWith("```json")) {
+      respuestaTexto = respuestaTexto.replace(/^```json/, "").replace(/```$/, "").trim();
+    } else if (respuestaTexto.startsWith("```")) {
+      respuestaTexto = respuestaTexto.replace(/^```/, "").replace(/```$/, "").trim();
+    }
 
-    // --- OPCIONES DE RESPUESTA ---
+    const respuestaIA = JSON.parse(respuestaTexto);
 
+    // D. Ejecutar la acción según la decisión de la IA
+
+    // CASO 1: Consultar la planilla
     if (respuestaIA.accion === "consultar_audiovisual") {
       await bot.sendMessage(chatId, `🔍 Buscando reservas para el ${respuestaIA.fecha}...`);
       const resultado = await consultarAudiovisuales(respuestaIA.fecha);
-      
+
       if (resultado.status === "success" && resultado.resultados.length > 0) {
         let msgRespuesta = `🎬 *Reservas encontradas para el ${respuestaIA.fecha}:*\n\n`;
         resultado.resultados.forEach(item => {
@@ -211,29 +142,24 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, `❌ No hay reservas registradas en Audiovisuales para el ${respuestaIA.fecha}.`);
       }
     } 
+    // CASO 2: Agregar a la planilla
     else if (respuestaIA.accion === "agregar_audiovisual") {
       await bot.sendMessage(chatId, `⏳ Guardando reserva en la planilla...`);
       const resultado = await agregarAudiovisual(respuestaIA);
-      
+
       if (resultado.status === "success") {
-        await bot.sendMessage(chatId, `✅ *¡Reserva guardada con éxito!*\n\n📅 Fecha: ${respuestaIA.fecha}\n📌 Actividad: ${respuestaIA.actividad}\n📍 Lugar: ${respuestaIA.lugar}`, { parse_mode: "Markdown" });
+        await bot.sendMessage(chatId, `✅ *¡Reserva guardada con éxito!*\n\n📅 Fecha: ${respuestaIA.fecha}\n📌 Actividad: ${respuestaIA.actividad}\n📍 Lugar: ${respuestaIA.lugar}\n⏰ Hora: ${respuestaIA.horaInicio}`, { parse_mode: "Markdown" });
       } else {
         await bot.sendMessage(chatId, `⚠️ Hubo un error al guardar en la planilla: ${resultado.message}`);
       }
     } 
+    // CASO 3: Charla general
     else {
-      await bot.sendMessage(chatId, respuestaIA.respuesta || "No entendí la consulta.");
+      await bot.sendMessage(chatId, respuestaIA.respuesta || "No pude procesar la consulta.");
     }
 
   } catch (error) {
-    console.error("Error al procesar el mensaje:", error);
+    console.error("Error procesando mensaje:", error);
     await bot.sendMessage(chatId, "⚠️ Ocurrió un error al procesar tu solicitud.");
   }
 });
-
-bot.launch(() => {
-  console.log('🤖 [Bot]: El Bot de Telegram de Agenda Inteligente está ONLINE');
-});
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
