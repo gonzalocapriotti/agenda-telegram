@@ -7,6 +7,17 @@ import { GeminiService } from './services/geminiService.js';
 import { DbService } from './services/dbService.js';
 import { initScheduler } from './services/scheduler.js';
 
+const http = require('http'); // Si usás 'import', poné: import http from 'http';
+
+// Servidor web de mentira para engañar a Render y que no apague el bot
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot de Agenda funcionando OK\n');
+}).listen(PORT, () => {
+  console.log(`🌐 Servidor web fantasma escuchando en el puerto ${PORT}`);
+});
+
 dotenv.config();
 
 if (!process.env.TELEGRAM_BOT_TOKEN) {
