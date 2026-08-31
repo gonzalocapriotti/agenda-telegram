@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import sqlite3 from 'sqlite3';
 
 // === 1. CONFIGURACIÓN Y BASE DE DATOS ===
@@ -12,9 +12,12 @@ if (!token) {
 }
 
 const bot = new Telegraf(token);
-const ai = new GoogleGenAI({ apiKey: apiKey });
+const genAI = new GoogleGenerativeAI(apiKey);
 
-// Base de datos SQLite local para tareas/recordatorios
+// Modelo actualizado a gemini-2.5-flash
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+// Inicializar SQLite para recordatorios locales
 const db = new sqlite3.Database('./recordatorios.db', (err) => {
   if (err) console.error("Error al conectar SQLite:", err);
   else console.log("💾 Base de datos SQLite lista.");
@@ -68,22 +71,18 @@ async function transcribirAudio(ctx, fileId) {
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    const responseAI = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [
-        "Transcribí de forma exacta y literal el contenido de este mensaje de voz en español.",
-        {
-          inlineData: {
-            data: buffer.toString("base64"),
-            mimeType: "audio/ogg"
-          }
-        }
-      ]
-    });
+    const audioPart = {
+      inlineData: {
+        data: buffer.toString("base64"),
+        mimeType: "audio/ogg"
+      }
+    };
 
-    return responseAI.text.trim();
+    const prompt = "Transcribí de forma exacta el contenido de este mensaje de voz en español.";
+    const result = await model.generateContent([prompt, audioPart]);
+    return result.response.text().trim();
   } catch (error) {
-    console.error("Error al transcribir audio:", error);
+    console.error("Error al transcribir el audio:", error);
     return null;
   }
 }
@@ -91,7 +90,7 @@ async function transcribirAudio(ctx, fileId) {
 // === 3. COMANDOS ===
 
 bot.command('start', (ctx) => {
-  ctx.reply("👋 ¡Hola! Asistente activo. Podés enviarme mensajes de texto o voz.");
+  ctx.reply("👋 ¡Hola! Asistente activo. Podés mandarme texto o audios para consultar/agendar en Audiovisuales o pedirme recordatorios.");
 });
 
 bot.command('tareas', (ctx) => {
@@ -166,12 +165,8 @@ bot.on(['text', 'voice'], async (ctx) => {
     {"accion": "charla", "respuesta": "Escribí tu respuesta habitual aquí."}
     `;
 
-    const responseAI = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: promptAI
-    });
-
-    let respuestaTexto = responseAI.text.trim();
+    const result = await model.generateContent(promptAI);
+    let respuestaTexto = result.response.text().trim();
 
     if (respuestaTexto.startsWith("```json")) {
       respuestaTexto = respuestaTexto.replace(/^```json/, "").replace(/```$/, "").trim();
