@@ -18,6 +18,43 @@ http.createServer((req, res) => {
   console.log(`🌐 Servidor web fantasma escuchando en el puerto ${PORT}`);
 });
 
+// Carga la URL que configuraste en Render
+const WEBHOOK_URL = process.env.WEBHOOK_AUDIOVISUAL_URL;
+
+// Función para consultar la planilla por fecha
+async function consultarAudiovisuales(fecha) {
+  try {
+    const url = `${WEBHOOK_URL}?accion=consultar&fecha=${encodeURIComponent(fecha)}`;
+    const response = await fetch(url);
+    return await response.json();
+  } catch (error) {
+    console.error("Error al consultar la planilla:", error);
+    return { status: "error", message: error.message };
+  }
+}
+
+// Función para agregar un nuevo registro a la planilla
+async function agregarAudiovisual(datos) {
+  try {
+    const params = new URLSearchParams({
+      accion: "agregar",
+      fecha: datos.fecha || "",
+      unidad: datos.unidad || "SECUNDARIA",
+      horaInicio: datos.horaInicio || "",
+      lugar: datos.lugar || "",
+      actividad: datos.actividad || "",
+      responsable: datos.responsable || ""
+    });
+
+    const url = `${WEBHOOK_URL}?${params.toString()}`;
+    const response = await fetch(url);
+    return await response.json();
+  } catch (error) {
+    console.error("Error al agregar a la planilla:", error);
+    return { status: "error", message: error.message };
+  }
+}
+
 dotenv.config();
 
 if (!process.env.TELEGRAM_BOT_TOKEN) {
