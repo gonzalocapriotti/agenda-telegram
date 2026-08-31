@@ -1,6 +1,16 @@
 import { Telegraf } from 'telegraf';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import sqlite3 from 'sqlite3';
+import http from 'http';
+
+// === 0. SERVIDOR PARA PUERTO DE RENDER ===
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot Online\n');
+}).listen(PORT, () => {
+  console.log(`🌐 Servidor fantasma escuchando en el puerto ${PORT}`);
+});
 
 // === 1. CONFIGURACIÓN Y BASE DE DATOS ===
 const token = process.env.TELEGRAM_TOKEN;
@@ -13,9 +23,7 @@ if (!token) {
 
 const bot = new Telegraf(token);
 const genAI = new GoogleGenerativeAI(apiKey);
-
-// Modelo actualizado a gemini-2.5-flash
-const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
 // Inicializar SQLite para recordatorios locales
 const db = new sqlite3.Database('./recordatorios.db', (err) => {
@@ -57,15 +65,6 @@ async function agregarAudiovisual(datos) {
 
     const url = `${WEBHOOK_URL}?${params.toString()}`;
     const response = await fetch(url, { redirect: 'follow' });
-    return await response.json();
-  } catch (error) {
-    console.error("Error al agregar a la planilla:", error);
-    return { status: "error", message: error.message };
-  }
-}
-
-    const url = `${WEBHOOK_URL}?${params.toString()}`;
-    const response = await fetch(url);
     return await response.json();
   } catch (error) {
     console.error("Error al agregar a la planilla:", error);
