@@ -1,22 +1,17 @@
-import TelegramBot from 'node-telegram-bot-api';
+import { Telegraf } from 'telegraf';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// === 1. CONFIGURACIÓN Y VARIABLES DE ENTORNO ===
+// === 1. CONFIGURACIÓN ===
 const token = process.env.TELEGRAM_TOKEN;
 const apiKey = process.env.GEMINI_API_KEY;
 const WEBHOOK_URL = process.env.WEBHOOK_AUDIOVISUAL_URL;
 
-if (!token || !apiKey || !WEBHOOK_URL) {
-  console.error("⚠️ Faltan variables de entorno requeridas (TELEGRAM_TOKEN, GEMINI_API_KEY, WEBHOOK_AUDIOVISUAL_URL).");
-}
-
-const bot = new TelegramBot(token, { polling: true });
+const bot = new Telegraf(token);
 const genAI = new GoogleGenerativeAI(apiKey);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// === 2. FUNCIONES DE CONEXIÓN CON LA API WEB DE GOOGLE SHEETS ===
+// === 2. FUNCIONES DE CONEXIÓN A GOOGLE SHEETS ===
 
-// Consulta las reservas filtradas por fecha
 async function consultarAudiovisuales(fecha) {
   try {
     const url = `${WEBHOOK_URL}?accion=consultar&fecha=${encodeURIComponent(fecha)}`;
@@ -28,7 +23,6 @@ async function consultarAudiovisuales(fecha) {
   }
 }
 
-// Agrega una nueva fila de reserva a la pestaña "2026"
 async function agregarAudiovisual(datos) {
   try {
     const params = new URLSearchParams({
@@ -50,11 +44,9 @@ async function agregarAudiovisual(datos) {
   }
 }
 
-// === 3. FUNCION DE PROCESAMIENTO MULTIMODAL DE AUDIO ===
-
-async function transcribirAudio(fileId) {
+async function transcribirAudio(ctx, fileId) {
   try {
-    const fileLink = await bot.getFileLink(fileId);
+    const fileLink = await ctx.telegram.getFileLink(fileId);
     const response = await fetch(fileLink);
     const arrayBuffer = await response.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
@@ -66,61 +58,71 @@ async function transcribirAudio(fileId) {
       }
     };
 
-    const prompt = "Transcribí de forma exacta y literal lo que se dice en este mensaje de audio en español.";
+    const prompt = "Transcribí exactamente lo que se dice en este audio en español.";
     const result = await model.generateContent([prompt, audioPart]);
     return result.response.text().trim();
   } catch (error) {
-    console.error("Error al procesar el archivo de voz:", error);
+    console.error("Error al transcribir audio:", error);
     return null;
   }
 }
 
-// === 4. PROCESADOR UNIFICADO DE MENSAJES (TEXTO Y VOZ) ===
+// === 3. COMANDOS EXISTENTES ===
 
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
+bot.command('ayuda', (ctx) => {
+  ctx.reply("🤖 *Comandos disponibles:*\n/tareas - Ver lista\n/borrar - Eliminar elemento\n/ayuda - Esta ayuda\n\nTambién podés mandarme notas de voz o texto libre para agendar o consultar en Audiovisuales.", { parse_mode: 'Markdown' });
+});
+
+bot.command('tareas', (ctx) => {
+  ctx.reply("📋 Lista de tareas activa.");
+});
+
+bot.command('borrar', (ctx) => {
+  ctx.reply("🗑️ Modo borrado activado.");
+});
+
+// === 4. ESCUCHA GENERAL DE TEXTO Y VOZ PARA GEMINI Y SHEETS ===
+
+bot.on(['text', 'voice'], async (ctx) => {
   let textoUsuario = "";
 
   try {
-    // 1. Detección y extracción de entrada (Voz o Texto)
-    if (msg.voice) {
-      await bot.sendMessage(chatId, "🎙️ Escuchando y transcribiendo tu audio...");
-      textoUsuario = await transcribirAudio(msg.voice.file_id);
-      
+    if (ctx.message.voice) {
+      await ctx.reply("🎙️ Escuchando tu audio...");
+      textoUsuario = await transcribirAudio(ctx, ctx.message.voice.file_id);
       if (!textoUsuario) {
-        await bot.sendMessage(chatId, "⚠️ No pude procesar o entender el audio enviado.");
+        await ctx.reply("⚠️ No pude interpretar el audio.");
         return;
       }
-    } else if (msg.text) {
-      textoUsuario = msg.text;
-    } else {
-      return; // Se ignoran stickers, imágenes, archivos o ubicaciones
+    } else if (ctx.message.text) {
+      // Ignorar si es un comando con /
+      if (ctx.message.text.startsWith('/')) return;
+      textoUsuario = ctx.message.text;
     }
 
-    // 2. Cálculo de contexto temporal (Zona Horaria Argentina)
+    if (!textoUsuario) return;
+
     const fechaActual = new Date().toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" });
 
-    // 3. Prompt de clasificación de intención para Gemini
     const promptAI = `
     La fecha y hora actual en Argentina es ${fechaActual}.
     El usuario dijo: "${textoUsuario}".
 
-    Analizá la intención de la entrada. Si el usuario solicita interactuar con la planilla de reservas de Audiovisuales, devolvé ÚNICAMENTE un objeto JSON estructurado (sin formato Markdown, sin \`\`\`json):
+    Analizá el pedido. Si el usuario quiere interactuar con la planilla de Audiovisuales, respondé ÚNICAMENTE un objeto JSON estricto (sin bloques \`\`\`json):
 
-    1. Si requiere CONSULTAR la agenda (ejemplo: "¿Qué hay en audiovisuales el 5 de septiembre?"):
+    1. Si quiere CONSULTAR la planilla (ej: "¿Qué hay en audiovisuales el 5/9?"):
     {"accion": "consultar_audiovisual", "fecha": "5/9"}
 
-    2. Si requiere AGREGAR una reserva (ejemplo: "Agendá proyector para 4to A el 10/9 a las 09:00 en el Hall"):
+    2. Si quiere AGREGAR/AGENDAR en la planilla (ej: "Agendá proyector para 4to A el 10/9 a las 09:00 en el Hall"):
     {"accion": "agregar_audiovisual", "fecha": "10/09/2026", "unidad": "SECUNDARIA", "horaInicio": "09:00", "lugar": "Hall", "actividad": "Proyector para 4to A", "responsable": ""}
 
-    3. Si es una conversación libre, pregunta general o asistencia no relacionada a la planilla:
+    3. Si es una conversación o consulta libre:
     {"accion": "charla", "respuesta": "Escribí tu respuesta conversacional habitual aquí."}
     `;
 
     const result = await model.generateContent(promptAI);
     let respuestaTexto = result.response.text().trim();
 
-    // Limpieza de formato Markdown en la respuesta devuelta por el modelo
     if (respuestaTexto.startsWith("```json")) {
       respuestaTexto = respuestaTexto.replace(/^```json/, "").replace(/```$/, "").trim();
     } else if (respuestaTexto.startsWith("```")) {
@@ -129,10 +131,8 @@ bot.on('message', async (msg) => {
 
     const respuestaIA = JSON.parse(respuestaTexto);
 
-    // 4. Ejecución del flujo según la intención clasificada
-
     if (respuestaIA.accion === "consultar_audiovisual") {
-      await bot.sendMessage(chatId, `🔍 Consultando agenda para el ${respuestaIA.fecha}...`);
+      await ctx.reply(`🔍 Consultando agenda para el ${respuestaIA.fecha}...`);
       const resultado = await consultarAudiovisuales(respuestaIA.fecha);
 
       if (resultado.status === "success" && resultado.resultados.length > 0) {
@@ -140,31 +140,34 @@ bot.on('message', async (msg) => {
         resultado.resultados.forEach(item => {
           msgRespuesta += `• *${item.actividad}*\n  📍 Lugar: ${item.lugar}\n  ⏰ Hora: ${item.horaInicio}\n  🏫 Unidad: ${item.unidad}\n\n`;
         });
-        await bot.sendMessage(chatId, msgRespuesta, { parse_mode: "Markdown" });
+        await ctx.reply(msgRespuesta, { parse_mode: "Markdown" });
       } else {
-        await bot.sendMessage(chatId, `❌ No se registraron reservas en Audiovisuales para el ${respuestaIA.fecha}.`);
+        await ctx.reply(`❌ No hay reservas registradas en Audiovisuales para el ${respuestaIA.fecha}.`);
       }
     } 
     else if (respuestaIA.accion === "agregar_audiovisual") {
-      await bot.sendMessage(chatId, `⏳ Guardando el registro en la planilla...`);
+      await ctx.reply(`⏳ Guardando registro en la planilla...`);
       const resultado = await agregarAudiovisual(respuestaIA);
 
       if (resultado.status === "success") {
-        await bot.sendMessage(
-          chatId, 
-          `✅ *¡Reserva guardada con éxito!*\n\n📅 *Fecha:* ${respuestaIA.fecha}\n📌 *Actividad:* ${respuestaIA.actividad}\n📍 *Lugar:* ${respuestaIA.lugar}\n⏰ *Hora:* ${respuestaIA.horaInicio}`, 
+        await ctx.reply(
+          `✅ *¡Reserva guardada con éxito!*\n\n📅 *Fecha:* ${respuestaIA.fecha}\n📌 *Actividad:* ${respuestaIA.actividad}\n📍 *Lugar:* ${respuestaIA.lugar}\n⏰ *Hora:* ${respuestaIA.horaInicio}`,
           { parse_mode: "Markdown" }
         );
       } else {
-        await bot.sendMessage(chatId, `⚠️ No se pudo guardar el registro: ${resultado.message}`);
+        await ctx.reply(`⚠️ No se pudo guardar el registro: ${resultado.message}`);
       }
     } 
     else {
-      await bot.sendMessage(chatId, respuestaIA.respuesta || "No pude interpretar tu solicitud.");
+      await ctx.reply(respuestaIA.respuesta || "No pude interpretar tu solicitud.");
     }
 
   } catch (error) {
-    console.error("Error en el ciclo de procesamiento de mensaje:", error);
-    await bot.sendMessage(chatId, "⚠️ Ocurrió un error al procesar la solicitud.");
+    console.error("Error en el procesador:", error);
+    await ctx.reply("⚠️ Ocurrió un error al procesar tu solicitud.");
   }
 });
+
+bot.launch();
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
