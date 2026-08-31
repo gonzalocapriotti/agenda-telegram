@@ -23,7 +23,7 @@ if (!token) {
 
 const bot = new Telegraf(token);
 const genAI = new GoogleGenerativeAI(apiKey);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
 
 // Inicializar SQLite para recordatorios locales
 const db = new sqlite3.Database('./recordatorios.db', (err) => {
