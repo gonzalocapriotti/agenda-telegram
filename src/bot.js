@@ -2,23 +2,25 @@ import { Telegraf } from 'telegraf';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import sqlite3 from 'sqlite3';
 
-// === 1. VALIDACIÓN DE ENTÓRNO Y CLIENTES ===
+// === 1. CONFIGURACIÓN Y BASE DE DATOS ===
 const token = process.env.TELEGRAM_TOKEN;
 const apiKey = process.env.GEMINI_API_KEY;
 const WEBHOOK_URL = process.env.WEBHOOK_AUDIOVISUAL_URL;
 
 if (!token) {
-  throw new Error("❌ CRÍTICO: La variable TELEGRAM_TOKEN no está definida en Render.");
+  console.error("❌ ERROR: La variable TELEGRAM_TOKEN no está definida.");
 }
 
 const bot = new Telegraf(token);
 const genAI = new GoogleGenerativeAI(apiKey);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-// Base de datos SQLite
+// Se actualiza el nombre del modelo para evitar el error 404 en la API
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+// Inicializar SQLite para recordatorios locales
 const db = new sqlite3.Database('./recordatorios.db', (err) => {
   if (err) console.error("Error al conectar SQLite:", err);
-  else console.log("💾 Base de datos SQLite conectada.");
+  else console.log("💾 Base de datos SQLite lista.");
 });
 
 db.run(`CREATE TABLE IF NOT EXISTS recordatorios (
@@ -28,7 +30,7 @@ db.run(`CREATE TABLE IF NOT EXISTS recordatorios (
   fecha TEXT
 )`);
 
-// === 2. CONEXIÓN GOOGLE SHEETS Y AUDIO ===
+// === 2. FUNCIONES AUXILIARES ===
 
 async function consultarAudiovisuales(fecha) {
   try {
@@ -76,11 +78,11 @@ async function transcribirAudio(ctx, fileId) {
       }
     };
 
-    const prompt = "Transcribí el contenido de este audio en español.";
+    const prompt = "Transcribí de forma exacta el contenido de este mensaje de voz en español.";
     const result = await model.generateContent([prompt, audioPart]);
     return result.response.text().trim();
   } catch (error) {
-    console.error("Error al transcribir audio:", error);
+    console.error("Error al transcribir el audio:", error);
     return null;
   }
 }
@@ -88,7 +90,7 @@ async function transcribirAudio(ctx, fileId) {
 // === 3. COMANDOS ===
 
 bot.command('start', (ctx) => {
-  ctx.reply("👋 ¡Hola! Bot listo. Mandame mensajes, audios o usá /tareas.");
+  ctx.reply("👋 ¡Hola! Asistente activo. Podés mandarme texto o audios para consultar/agendar en Audiovisuales o pedirme recordatorios.");
 });
 
 bot.command('tareas', (ctx) => {
@@ -123,7 +125,7 @@ bot.command('ayuda', (ctx) => {
   ctx.reply("🤖 *Comandos:*\n/tareas - Ver pendientes\n/borrar [id] - Borrar pendiente", { parse_mode: 'Markdown' });
 });
 
-// === 4. PROCESADOR PRINCIPAL (MENSAJES Y AUDIO) ===
+// === 4. PROCESADOR PRINCIPAL (MENSAJES Y AUDIOS) ===
 
 bot.on(['text', 'voice'], async (ctx) => {
   let textoUsuario = "";
@@ -148,18 +150,18 @@ bot.on(['text', 'voice'], async (ctx) => {
     La fecha y hora actual es ${fechaActual}.
     El usuario dijo: "${textoUsuario}".
 
-    Analizá la intención. Respondé ÚNICAMENTE un objeto JSON estricto (sin \`\`\`json):
+    Analizá la intención. Respondé ÚNICAMENTE un objeto JSON estricto (sin etiquetas \`\`\`json):
 
-    1. Si quiere CONSULTAR Audiovisuales:
+    1. Si quiere CONSULTAR la planilla de Audiovisuales:
     {"accion": "consultar_audiovisual", "fecha": "5/9"}
 
-    2. Si quiere AGREGAR a Audiovisuales:
-    {"accion": "agregar_audiovisual", "fecha": "10/09/2026", "unidad": "SECUNDARIA", "horaInicio": "09:00", "lugar": "Hall", "actividad": "Proyector", "responsable": ""}
+    2. Si quiere AGREGAR/AGENDAR en la planilla de Audiovisuales:
+    {"accion": "agregar_audiovisual", "fecha": "10/09/2026", "unidad": "SECUNDARIA", "horaInicio": "09:00", "lugar": "Hall", "actividad": "Proyector para 4to A", "responsable": ""}
 
     3. Si pide GUARDAR UN RECORDATORIO O ALARMA (ej: "recordame en 10 minutos apagar el horno"):
     {"accion": "guardar_recordatorio", "texto": "apagar el horno", "minutos": 10, "fechaTexto": "en 10 minutos"}
 
-    4. Si es una charla normal:
+    4. Si es una conversación o consulta general:
     {"accion": "charla", "respuesta": "Escribí tu respuesta habitual aquí."}
     `;
 
@@ -189,16 +191,16 @@ bot.on(['text', 'voice'], async (ctx) => {
       }
     } 
     else if (respuestaIA.accion === "agregar_audiovisual") {
-      await ctx.reply(`⏳ Guardando en la planilla...`);
+      await ctx.reply(`⏳ Guardando registro en la planilla...`);
       const resultado = await agregarAudiovisual(respuestaIA);
 
       if (resultado.status === "success") {
         await ctx.reply(
-          `✅ *¡Reserva guardada con éxito!*\n\n📅 *Fecha:* ${respuestaIA.fecha}\n📌 *Actividad:* ${respuestaIA.actividad}\n📍 *Lugar:* ${respuestaIA.lugar}\n⏰ *Hora:* ${respuestaIA.horaInicio}`,
+          `✅ *¡Reserva guardada con éxito en la planilla!*\n\n📅 *Fecha:* ${respuestaIA.fecha}\n📌 *Actividad:* ${respuestaIA.actividad}\n📍 *Lugar:* ${respuestaIA.lugar}\n⏰ *Hora:* ${respuestaIA.horaInicio}`,
           { parse_mode: "Markdown" }
         );
       } else {
-        await ctx.reply(`⚠️ Error al guardar: ${resultado.message}`);
+        await ctx.reply(`⚠️ No se pudo guardar el registro: ${resultado.message}`);
       }
     }
     else if (respuestaIA.accion === "guardar_recordatorio") {
@@ -210,30 +212,31 @@ bot.on(['text', 'voice'], async (ctx) => {
 
       if (respuestaIA.minutos && respuestaIA.minutos > 0) {
         const milisegundos = respuestaIA.minutos * 60 * 1000;
-        await ctx.reply(`⏰ *Recordatorio programado:* "${respuestaIA.texto}"\n\nTe aviso en ${respuestaIA.minutos} minuto(s).`, { parse_mode: "Markdown" });
+        await ctx.reply(`⏰ *Recordatorio programado:* "${respuestaIA.texto}"\n\nTe voy a avisar en ${respuestaIA.minutos} minuto(s).`, { parse_mode: "Markdown" });
 
         setTimeout(async () => {
           try {
             await ctx.telegram.sendMessage(ctx.chat.id, `🔔 *¡RECORDATORIO!*\n\n📌 *Tarea:* ${respuestaIA.texto}`, { parse_mode: "Markdown" });
           } catch (e) {
-            console.error("Error al enviar alarma:", e);
+            console.error("Error al enviar alarma programada:", e);
           }
         }, milisegundos);
+
       } else {
-        await ctx.reply(`📌 *Recordatorio guardado:* "${respuestaIA.texto}"\n\nPodés ver tus tareas con /tareas`, { parse_mode: "Markdown" });
+        await ctx.reply(`📌 *Recordatorio guardado:* "${respuestaIA.texto}"\n\nPodés ver tus tareas pendientes con /tareas`, { parse_mode: "Markdown" });
       }
     }
     else {
-      await ctx.reply(respuestaIA.respuesta || "No entendí la consulta.");
+      await ctx.reply(respuestaIA.respuesta || "No pude interpretar tu solicitud.");
     }
 
   } catch (error) {
-    console.error("Error en el procesador:", error);
+    console.error("Error en el procesador de mensaje:", error);
     await ctx.reply("⚠️ Ocurrió un error al procesar tu solicitud.");
   }
 });
 
-bot.launch().then(() => console.log("🚀 Bot levantado correctamente con Telegraf"));
+bot.launch().then(() => console.log("🚀 Bot levantado correctamente en Render"));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
